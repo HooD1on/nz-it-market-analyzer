@@ -1,4 +1,4 @@
-import mysql, { Pool, PoolOptions } from "mysql2/promise";
+import mysql, { Pool, PoolOptions, RowDataPacket } from "mysql2/promise";
 
 const requiredEnvKeys = [
   "DB_HOST",
@@ -39,6 +39,14 @@ function createPoolConfig(): PoolOptions {
 }
 
 export const dbPool: Pool = mysql.createPool(createPoolConfig());
+
+export async function queryStats<T = RowDataPacket[]>(
+  sql: string,
+  params: Array<string | number | Date> = [],
+): Promise<T> {
+  const [rows] = await dbPool.query(sql, params);
+  return rows as T;
+}
 
 export async function closeDbPool(): Promise<void> {
   await dbPool.end();

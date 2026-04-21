@@ -6,16 +6,19 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "data:update": "tsx scripts/scraper.ts"
   },
   "dependencies": {
     "cheerio": "^1.2.0",
     "dotenv": "^17.4.2",
+    "html-to-image": "^1.11.13",
     "mysql2": "^3.22.1",
     "next": "16.2.4",
     "playwright": "^1.59.1",
     "react": "19.2.4",
-    "react-dom": "19.2.4"
+    "react-dom": "19.2.4",
+    "recharts": "^3.8.1"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
