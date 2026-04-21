@@ -8,7 +8,6 @@ import {
   CartesianGrid,
   Line,
   LineChart,
-  ResponsiveContainer,
   Tooltip,
   XAxis,
   YAxis,
@@ -32,6 +31,8 @@ type StatsResponse = {
 
 const BAR_COLOR = "#22d3ee";
 const LINE_COLOR = "#38bdf8";
+const CHART_WIDTH = 912;
+const CHART_HEIGHT = 500;
 
 function formatDateKey(date: Date): string {
   return date.toISOString().slice(0, 10);
@@ -135,38 +136,43 @@ export default function StatsPage() {
   }
 
   async function handleExport(): Promise<void> {
-    if (isExporting || !isStatsReady) {
-      return;
-    }
+    if (isExporting || !isStatsReady) return;
 
+    let clonedNode: HTMLElement | null = null;
     try {
       setIsExporting(true);
       setExportError(null);
       setExportSuccess(null);
 
       const posterNode = document.getElementById("poster-area");
-      if (!posterNode) {
-        throw new Error("Poster container not found.");
-      }
+      if (!posterNode) throw new Error("Poster container not found.");
 
       await waitForStableRender();
 
-      const dataUrl = await toPng(posterNode, {
+      // Deep clone poster node to avoid exporting transformed preview tree.
+      clonedNode = posterNode.cloneNode(true) as HTMLElement;
+
+      Object.assign(clonedNode.style, {
+        transform: "none",
+        scale: "1",
+        position: "fixed",
+        left: "-20000px",
+        top: "0",
+        width: "1080px",
+        height: "1440px",
+        boxSizing: "border-box",
+        margin: "0",
+        zIndex: "-1",
+        backgroundColor: "#0f172a",
+      });
+
+      document.body.appendChild(clonedNode);
+
+      const dataUrl = await toPng(clonedNode, {
         cacheBust: true,
         pixelRatio: 2,
         width: 1080,
         height: 1440,
-        canvasWidth: 1080,
-        canvasHeight: 1440,
-        style: {
-          transform: "scale(1)",
-          width: "1080px",
-          height: "1440px",
-          display: "flex",
-          flexDirection: "column",
-          backgroundColor: "#0f172a",
-          padding: "60px",
-        },
       });
 
       const dateToken = new Date().toISOString().slice(0, 10).replace(/-/g, "");
@@ -178,8 +184,11 @@ export default function StatsPage() {
       link.click();
       setExportSuccess(`导出成功：${filename}`);
     } catch (err) {
-      setExportError(err instanceof Error ? err.message : "海报导出失败，请稍后重试。");
+      setExportError(err instanceof Error ? err.message : "海报导出失败。");
     } finally {
+      if (clonedNode && document.body.contains(clonedNode)) {
+        document.body.removeChild(clonedNode);
+      }
       setIsExporting(false);
     }
   }
@@ -220,11 +229,12 @@ export default function StatsPage() {
         ) : null}
 
         <div className="h-[720px] w-[540px] max-w-full overflow-hidden rounded-2xl shadow-lg">
-          <div
-            id="poster-area"
-            className="box-border flex h-[1440px] w-[1080px] origin-top-left scale-50 flex-col overflow-hidden bg-slate-900 p-[60px] text-white"
-          >
-            <div className="flex h-full flex-col">
+          <div className="h-[1440px] w-[1080px] origin-top-left scale-50">
+            <div
+              id="poster-area"
+              className="box-border flex h-full w-full flex-col overflow-hidden bg-slate-900 p-[60px] text-white"
+            >
+              <div className="flex h-full flex-col">
               <div className="mb-6 border-b border-slate-700 pb-5 text-center">
                 <h2 className="text-[30px] font-bold tracking-tight">新西兰 IT 市场每日分析</h2>
                 <p className="mt-1 text-base font-medium text-slate-200">日期：{todayLabel}</p>
@@ -245,50 +255,57 @@ export default function StatsPage() {
                 <div className="flex h-full flex-col justify-between">
                   <section className="h-[600px] w-full min-w-full rounded-xl border border-slate-700 bg-slate-800/60 p-6">
                     <h3 className="mb-3 text-lg font-semibold text-cyan-300">技术热度排行 Top 10</h3>
-                    <div className="h-[500px] w-full min-w-full">
-                      <ResponsiveContainer width="100%" height="100%" minWidth={100}>
-                        <BarChart data={keywordTop10} margin={{ top: 24, right: 36, left: 20, bottom: 42 }}>
-                          <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#334155" />
-                          <XAxis
-                            dataKey="name"
-                            tick={{ fontSize: 14, fill: "#e2e8f0" }}
-                            interval={0}
-                            angle={-20}
-                            height={42}
-                          />
-                          <YAxis tick={{ fontSize: 13, fill: "#e2e8f0" }} />
-                          <Tooltip />
-                          <Bar dataKey="value" fill={BAR_COLOR} radius={[5, 5, 0, 0]} />
-                        </BarChart>
-                      </ResponsiveContainer>
+                    <div className="h-[500px] w-full min-w-full overflow-hidden">
+                      <BarChart
+                        width={CHART_WIDTH}
+                        height={CHART_HEIGHT}
+                        data={keywordTop10}
+                        margin={{ top: 24, right: 36, left: 20, bottom: 42 }}
+                      >
+                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#334155" />
+                        <XAxis
+                          dataKey="name"
+                          tick={{ fontSize: 14, fill: "#e2e8f0" }}
+                          interval={0}
+                          angle={-20}
+                          height={42}
+                        />
+                        <YAxis tick={{ fontSize: 13, fill: "#e2e8f0" }} />
+                        <Tooltip />
+                        <Bar dataKey="value" fill={BAR_COLOR} radius={[5, 5, 0, 0]} />
+                      </BarChart>
                     </div>
                   </section>
 
                   <section className="h-[600px] w-full min-w-full rounded-xl border border-slate-700 bg-slate-800/60 p-6">
                     <h3 className="mb-3 text-lg font-semibold text-cyan-300">岗位增长趋势（近 7 天）</h3>
-                    <div className="h-[500px] w-full min-w-full">
-                      <ResponsiveContainer width="100%" height="100%" minWidth={100}>
-                        <LineChart data={dailyTrend} margin={{ top: 24, right: 36, left: 20, bottom: 30 }}>
-                          <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
-                          <XAxis dataKey="date" tick={{ fontSize: 13, fill: "#e2e8f0" }} />
-                          <YAxis tick={{ fontSize: 13, fill: "#e2e8f0" }} />
-                          <Tooltip />
-                          <Line
-                            type="monotone"
-                            dataKey="value"
-                            stroke={LINE_COLOR}
-                            strokeWidth={3}
-                            dot={{ r: 3 }}
-                            isAnimationActive={false}
-                          />
-                        </LineChart>
-                      </ResponsiveContainer>
+                    <div className="h-[500px] w-full min-w-full overflow-hidden">
+                      <LineChart
+                        width={CHART_WIDTH}
+                        height={CHART_HEIGHT}
+                        data={dailyTrend}
+                        margin={{ top: 24, right: 36, left: 20, bottom: 30 }}
+                      >
+                        <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+                        <XAxis dataKey="date" tick={{ fontSize: 13, fill: "#e2e8f0" }} />
+                        <YAxis tick={{ fontSize: 13, fill: "#e2e8f0" }} />
+                        <Tooltip />
+                        <Line
+                          type="monotone"
+                          dataKey="value"
+                          stroke={LINE_COLOR}
+                          strokeWidth={3}
+                          dot={{ r: 3 }}
+                          isAnimationActive={false}
+                        />
+                      </LineChart>
                     </div>
                   </section>
                 </div>
               )}
             </div>
           </div>
+        </div>
         </div>
       </div>
     </div>
