@@ -62,6 +62,65 @@ function fillLast7Days(data: DailyDatum[]): DailyDatum[] {
   return result;
 }
 
+async function isLikelySolidImage(dataUrl: string): Promise<boolean> {
+  return new Promise<boolean>((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement("canvas");
+      canvas.width = img.naturalWidth;
+      canvas.height = img.naturalHeight;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) {
+        resolve(false);
+        return;
+      }
+
+      ctx.drawImage(img, 0, 0);
+      const { data, width, height } = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      const stepX = Math.max(1, Math.floor(width / 48));
+      const stepY = Math.max(1, Math.floor(height / 48));
+
+      let baseR = -1;
+      let baseG = -1;
+      let baseB = -1;
+      let sampled = 0;
+      let similar = 0;
+
+      for (let y = 0; y < height; y += stepY) {
+        for (let x = 0; x < width; x += stepX) {
+          const idx = (y * width + x) * 4;
+          const alpha = data[idx + 3];
+          if (alpha < 8) continue;
+
+          const r = data[idx];
+          const g = data[idx + 1];
+          const b = data[idx + 2];
+          if (baseR < 0) {
+            baseR = r;
+            baseG = g;
+            baseB = b;
+          }
+
+          const delta = Math.abs(r - baseR) + Math.abs(g - baseG) + Math.abs(b - baseB);
+          if (delta <= 9) {
+            similar += 1;
+          }
+          sampled += 1;
+        }
+      }
+
+      if (sampled === 0) {
+        resolve(true);
+        return;
+      }
+
+      resolve(similar / sampled > 0.985);
+    };
+    img.onerror = () => resolve(false);
+    img.src = dataUrl;
+  });
+}
+
 export default function StatsPage() {
   const [stats, setStats] = useState<StatsResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -156,24 +215,37 @@ export default function StatsPage() {
         transform: "none",
         scale: "1",
         position: "fixed",
-        left: "-20000px",
+        left: "-9999px",
         top: "0",
         width: "1080px",
         height: "1440px",
-        boxSizing: "border-box",
-        margin: "0",
-        zIndex: "-1",
-        backgroundColor: "#0f172a",
       });
 
       document.body.appendChild(clonedNode);
+      void clonedNode.offsetHeight;
+      if ("fonts" in document) {
+        await document.fonts.ready;
+      }
+      await waitForStableRender();
+      await new Promise((r) => setTimeout(r, 300));
 
-      const dataUrl = await toPng(clonedNode, {
+      const exportOptions = {
         cacheBust: true,
         pixelRatio: 2,
+        backgroundColor: "#0f172a",
         width: 1080,
         height: 1440,
-      });
+        canvasWidth: 1080,
+        canvasHeight: 1440,
+      } as const;
+
+      let dataUrl = await toPng(clonedNode, exportOptions);
+      const blankLike = await isLikelySolidImage(dataUrl);
+
+      if (blankLike) {
+        // Fallback to live node export if cloned snapshot is nearly solid.
+        dataUrl = await toPng(posterNode as HTMLElement, exportOptions);
+      }
 
       const dateToken = new Date().toISOString().slice(0, 10).replace(/-/g, "");
       const filename = `NZ_IT_Market_Report_${dateToken}.png`;
