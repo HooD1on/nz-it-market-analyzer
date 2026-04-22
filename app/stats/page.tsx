@@ -26,6 +26,8 @@ type DailyDatum = {
 type StatsResponse = {
   techKeywordFrequency: ChartDatum[];
   dailyNewJobs: DailyDatum[];
+  latestPublishedDate: string;
+  latestPublishedCount: number;
   categoryDistribution: ChartDatum[];
 };
 
@@ -33,34 +35,6 @@ const BAR_COLOR = "#22d3ee";
 const LINE_COLOR = "#38bdf8";
 const CHART_WIDTH = 912;
 const CHART_HEIGHT = 500;
-
-function formatDateKey(date: Date): string {
-  return date.toISOString().slice(0, 10);
-}
-
-function fillLast7Days(data: DailyDatum[]): DailyDatum[] {
-  const map = new Map<string, number>();
-  for (const item of data) {
-    const key = formatDateKey(new Date(item.date));
-    map.set(key, Number(item.value) || 0);
-  }
-
-  const result: DailyDatum[] = [];
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-
-  for (let i = 6; i >= 0; i -= 1) {
-    const current = new Date(today);
-    current.setDate(today.getDate() - i);
-    const key = formatDateKey(current);
-    result.push({
-      date: key,
-      value: map.get(key) ?? 0,
-    });
-  }
-
-  return result;
-}
 
 async function isLikelySolidImage(dataUrl: string): Promise<boolean> {
   return new Promise<boolean>((resolve) => {
@@ -164,7 +138,16 @@ export default function StatsPage() {
   }, []);
 
   const keywordTop10 = useMemo(() => (stats?.techKeywordFrequency ?? []).slice(0, 10), [stats]);
-  const dailyTrend = useMemo(() => fillLast7Days(stats?.dailyNewJobs ?? []), [stats]);
+  const dailyTrend = useMemo(() => stats?.dailyNewJobs ?? [], [stats]);
+  const isBootstrapLikeSpike = useMemo(() => {
+    if (dailyTrend.length === 0) {
+      return false;
+    }
+    const nonZeroDays = dailyTrend.filter((item) => item.value > 0).length;
+    const total = dailyTrend.reduce((sum, item) => sum + item.value, 0);
+    const maxValue = Math.max(...dailyTrend.map((item) => item.value));
+    return nonZeroDays <= 2 && total > 0 && maxValue / total >= 0.8;
+  }, [dailyTrend]);
 
   const todayLabel = useMemo(() => {
     return new Date().toLocaleDateString("en-NZ", {
@@ -350,7 +333,21 @@ export default function StatsPage() {
                   </section>
 
                   <section className="h-[600px] w-full min-w-full rounded-xl border border-slate-700 bg-slate-800/60 p-6">
-                    <h3 className="mb-3 text-lg font-semibold text-cyan-300">岗位增长趋势（近 7 天）</h3>
+                    <div className="mb-3 flex items-center justify-between gap-3">
+                      <h3 className="text-lg font-semibold text-cyan-300">
+                        岗位发布趋势（截至最近发布日期的近 7 天）
+                      </h3>
+                      <span className="rounded-md bg-slate-700 px-3 py-1 text-xs font-medium text-slate-200">
+                        {stats
+                          ? `最新发布：${stats.latestPublishedDate}（${stats.latestPublishedCount} 条）`
+                          : "数据加载中"}
+                      </span>
+                    </div>
+                    {isBootstrapLikeSpike ? (
+                      <p className="mb-2 text-xs text-slate-300">
+                        当前峰值可能受历史数据补录影响，后续会随每日新增发布逐步平滑。
+                      </p>
+                    ) : null}
                     <div className="h-[500px] w-full min-w-full overflow-hidden">
                       <LineChart
                         width={CHART_WIDTH}
@@ -363,7 +360,7 @@ export default function StatsPage() {
                         <YAxis tick={{ fontSize: 13, fill: "#e2e8f0" }} />
                         <Tooltip />
                         <Line
-                          type="monotone"
+                          type="linear"
                           dataKey="value"
                           stroke={LINE_COLOR}
                           strokeWidth={3}

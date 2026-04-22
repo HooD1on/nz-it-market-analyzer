@@ -16,6 +16,7 @@ type SearchListing = {
   classified_industry: string;
   classification: string;
   it_category: string;
+  listing_date?: string;
 };
 
 type JobSeed = {
@@ -26,6 +27,7 @@ type JobSeed = {
   category: string;
   classification: string;
   itCategory: string;
+  listingDateRaw: string;
 };
 
 type PreparedJobRecord = {
@@ -35,6 +37,7 @@ type PreparedJobRecord = {
   sourceUrl: string;
   techKeywords: string[];
   createdAt: Date;
+  listingDate: Date | null;
 };
 
 const KEYWORD_PATTERNS: Array<{ keyword: string; patterns: RegExp[] }> = [
@@ -75,6 +78,21 @@ function htmlToText(html: string): string {
     .replace(/<br\s*\/?>/gi, "\n")
     .replace(/<[^>]+>/g, " ");
   return normalizeText(text);
+}
+
+function parseListingDate(raw: string): Date | null {
+  const value = normalizeText(raw);
+  if (!value) {
+    return null;
+  }
+
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return null;
+  }
+
+  // Keep date-only semantic for market publishing date.
+  return new Date(Date.UTC(parsed.getUTCFullYear(), parsed.getUTCMonth(), parsed.getUTCDate()));
 }
 
 function isITCategory(category: string, classification = "", itCategory = ""): boolean {
@@ -127,7 +145,8 @@ async function loadSeedsFromJobItReport(dbPool: Pool): Promise<JobSeed[]> {
         COALESCE(description, '') AS description,
         COALESCE(classified_industry, '') AS classified_industry,
         COALESCE(classification, '') AS classification,
-        COALESCE(it_category, '') AS it_category
+        COALESCE(it_category, '') AS it_category,
+        COALESCE(listing_date, '') AS listing_date
       FROM job_it_report
       WHERE COALESCE(url, '') <> ''
     `,
@@ -142,6 +161,7 @@ async function loadSeedsFromJobItReport(dbPool: Pool): Promise<JobSeed[]> {
       category: String(row.classified_industry ?? ""),
       classification: String(row.classification ?? ""),
       itCategory: String(row.it_category ?? ""),
+      listingDateRaw: String(row.listing_date ?? ""),
     }))
     .filter((seed) => isITCategory(seed.category, seed.classification, seed.itCategory));
 
@@ -225,6 +245,7 @@ async function loadSeedsFromPagination(page: Page): Promise<JobSeed[]> {
         category: item.classified_industry ?? "",
         classification: item.classification ?? "",
         itCategory: item.it_category ?? "",
+        listingDateRaw: item.listing_date ?? "",
       })),
     );
   }
@@ -317,6 +338,7 @@ async function buildPreparedRecords(
       sourceUrl: normalizeText(seed.url),
       techKeywords,
       createdAt: new Date(),
+      listingDate: parseListingDate(seed.listingDateRaw),
     });
   }
 
@@ -331,12 +353,44 @@ async function ensureJobsTable(dbPool: Pool): Promise<void> {
       category VARCHAR(255) NOT NULL DEFAULT '',
       full_description MEDIUMTEXT NOT NULL,
       source_url VARCHAR(1024) NOT NULL,
+      listing_date DATE NULL,
       tech_keywords TEXT NOT NULL,
       created_at DATETIME NOT NULL,
       PRIMARY KEY (id),
       UNIQUE KEY uniq_title_source (title(255), source_url(255))
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
   `);
+  const [listingDateColumn] = await dbPool.query<RowDataPacket[]>(
+    `
+      SELECT COLUMN_NAME
+      FROM information_schema.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE()
+        AND TABLE_NAME = 'jobs'
+        AND COLUMN_NAME = 'listing_date'
+      LIMIT 1
+    `,
+  );
+  if (listingDateColumn.length === 0) {
+    await dbPool.query(`
+      ALTER TABLE jobs
+      ADD COLUMN listing_date DATE NULL AFTER source_url
+    `);
+  }
+}
+
+async function syncMissingListingDate(dbPool: Pool): Promise<number> {
+  const [result] = await dbPool.query(
+    `
+      UPDATE jobs AS j
+      INNER JOIN job_it_report AS r
+        ON j.source_url COLLATE utf8mb4_unicode_ci = r.url COLLATE utf8mb4_unicode_ci
+      SET j.listing_date = STR_TO_DATE(LEFT(r.listing_date, 10), '%Y-%m-%d')
+      WHERE j.listing_date IS NULL
+        AND r.listing_date IS NOT NULL
+        AND CHAR_LENGTH(TRIM(r.listing_date)) >= 10
+    `,
+  );
+  return Number((result as { affectedRows?: number }).affectedRows ?? 0);
 }
 
 async function insertJobsWithDedup(dbPool: Pool, records: PreparedJobRecord[]): Promise<number> {
@@ -352,19 +406,38 @@ async function insertJobsWithDedup(dbPool: Pool, records: PreparedJobRecord[]): 
       [record.title, record.sourceUrl],
     );
     if (existingRows.length > 0) {
+      if (record.listingDate) {
+        await dbPool.query(
+          `
+            UPDATE jobs
+            SET listing_date = COALESCE(listing_date, ?)
+            WHERE id = ?
+          `,
+          [record.listingDate, existingRows[0].id],
+        );
+      }
       continue;
     }
 
     await dbPool.query(
       `
-        INSERT INTO jobs (title, category, full_description, source_url, tech_keywords, created_at)
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO jobs (
+          title,
+          category,
+          full_description,
+          source_url,
+          listing_date,
+          tech_keywords,
+          created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?)
       `,
       [
         record.title,
         record.category,
         record.fullDescription,
         record.sourceUrl,
+        record.listingDate,
         record.techKeywords.join(", "),
         record.createdAt,
       ],
@@ -402,6 +475,10 @@ async function runScraper(): Promise<void> {
 
     const records = await buildPreparedRecords(context, seeds);
     console.log(`Prepared IT records: ${records.length}`);
+    const repaired = await syncMissingListingDate(dbPool);
+    if (repaired > 0) {
+      console.log(`Backfilled listing_date for ${repaired} existing rows`);
+    }
 
     records.slice(0, 3).forEach((item, index) => {
       console.log(`\n----- IT Job ${index + 1} Preview -----`);
