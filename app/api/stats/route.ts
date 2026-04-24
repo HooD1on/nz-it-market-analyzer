@@ -2,6 +2,9 @@ import { NextResponse } from "next/server";
 
 import { queryStats } from "@/lib/db";
 
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+
 type CategoryRow = {
   name: string;
   value: number;
@@ -140,7 +143,11 @@ export async function GET(): Promise<NextResponse> {
       })),
     };
 
-    return NextResponse.json(payload);
+    return NextResponse.json(payload, {
+      headers: {
+        "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+      },
+    });
   } catch (error) {
     console.error("Failed to fetch stats:", error);
     return NextResponse.json(

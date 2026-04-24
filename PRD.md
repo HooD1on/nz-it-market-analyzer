@@ -4,7 +4,7 @@
 抓取 IT 岗位数据并进行统计分析，生成每日就业市场分析海报 [cite: 24]。
 
 ## 2. 数据来源
-- URL: https://me2link.com/job?selection=job-report&ppage=1 [cite: 25]
+- URL: https://me2link.com/job?selection=job-report&ppage=1
 
 ## 3. 功能模块 [cite: 26, 28]
 - **数据抓取**：提取岗位名称、类别、技术关键词。

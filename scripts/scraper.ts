@@ -4,7 +4,6 @@ import { BrowserContext, chromium, Page } from "playwright";
 
 const REPORT_URL = "https://me2link.com/job?selection=job-report&ppage=1";
 const SEARCH_API_URL = "https://api.me2link.com/search";
-const MAX_PAGE_SCAN_FALLBACK = 180;
 const RESET_JOBS = process.argv.includes("--reset-jobs");
 
 loadEnv({ path: ".env.local" });
@@ -17,6 +16,12 @@ type SearchListing = {
   classification: string;
   it_category: string;
   listing_date?: string;
+};
+
+type SearchApiResponse = {
+  listings?: SearchListing[];
+  total_pages?: number;
+  total_count?: number;
 };
 
 type JobSeed = {
@@ -136,6 +141,20 @@ function dedupeSeeds(seeds: JobSeed[]): JobSeed[] {
 }
 
 async function loadSeedsFromJobItReport(dbPool: Pool): Promise<JobSeed[]> {
+  const [tableRows] = await dbPool.query<RowDataPacket[]>(
+    `
+      SELECT 1 AS ok
+      FROM information_schema.TABLES
+      WHERE TABLE_SCHEMA = DATABASE()
+        AND TABLE_NAME = 'job_it_report'
+      LIMIT 1
+    `,
+  );
+  if (tableRows.length === 0) {
+    console.log("job_it_report table not found, skip report seeds.");
+    return [];
+  }
+
   const [rows] = await dbPool.query<RowDataPacket[]>(
     `
       SELECT
@@ -195,7 +214,7 @@ async function gotoRealJobList(page: Page): Promise<void> {
   await page.waitForTimeout(3000);
 }
 
-async function fetchSearchPageFromBrowser(page: Page, pageNumber: number): Promise<SearchListing[]> {
+async function fetchSearchPageFromBrowser(page: Page, pageNumber: number): Promise<SearchApiResponse> {
   const result = await page.evaluate(
     async ({ apiUrl, pageNumber }) => {
       const response = await fetch(apiUrl, {
@@ -214,28 +233,55 @@ async function fetchSearchPageFromBrowser(page: Page, pageNumber: number): Promi
         throw new Error(`search API error ${response.status}`);
       }
 
-      return (await response.json()) as { listings?: SearchListing[] };
+      return (await response.json()) as SearchApiResponse;
     },
     { apiUrl: SEARCH_API_URL, pageNumber },
   );
 
-  return result.listings ?? [];
+  return result;
+}
+
+async function fetchSearchPageWithRetry(
+  page: Page,
+  pageNumber: number,
+  maxAttempts = 3,
+): Promise<SearchApiResponse> {
+  let lastError: unknown = null;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      return await fetchSearchPageFromBrowser(page, pageNumber);
+    } catch (error) {
+      lastError = error;
+      if (attempt < maxAttempts) {
+        await page.waitForTimeout(1200 * attempt);
+      }
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error(`Failed to fetch page ${pageNumber}`);
 }
 
 async function loadSeedsFromPagination(page: Page): Promise<JobSeed[]> {
   await gotoRealJobList(page);
   const seeds: JobSeed[] = [];
+  const firstPage = await fetchSearchPageWithRetry(page, 1);
+  const firstPageListings = firstPage.listings ?? [];
+  if (firstPageListings.length === 0) {
+    console.log("Search API returned no listings on page 1.");
+    return [];
+  }
 
-  for (let pageNumber = 1; pageNumber <= MAX_PAGE_SCAN_FALLBACK; pageNumber += 1) {
-    const listings = await fetchSearchPageFromBrowser(page, pageNumber);
-    if (listings.length === 0) {
-      break;
-    }
+  const reportedTotalPages = Number(firstPage.total_pages ?? 1);
+  const totalPages =
+    Number.isFinite(reportedTotalPages) && reportedTotalPages > 0
+      ? Math.floor(reportedTotalPages)
+      : 1;
+  const totalCount = Number(firstPage.total_count ?? 0);
+  console.log(`Search API reports total pages=${totalPages}, total count=${totalCount}`);
 
+  const appendITSeeds = (listings: SearchListing[]): void => {
     const itListings = listings.filter((item) =>
       isITCategory(item.classified_industry, item.classification, item.it_category),
     );
-
     seeds.push(
       ...itListings.map((item) => ({
         title: item.title,
@@ -248,10 +294,25 @@ async function loadSeedsFromPagination(page: Page): Promise<JobSeed[]> {
         listingDateRaw: item.listing_date ?? "",
       })),
     );
+  };
+
+  appendITSeeds(firstPageListings);
+
+  for (let pageNumber = 2; pageNumber <= totalPages; pageNumber += 1) {
+    const response = await fetchSearchPageWithRetry(page, pageNumber);
+    const listings = response.listings ?? [];
+    if (listings.length === 0) {
+      console.log(`Page ${pageNumber} returned empty listings, continue scanning.`);
+      continue;
+    }
+    appendITSeeds(listings);
+    if (pageNumber % 50 === 0 || pageNumber === totalPages) {
+      console.log(`Fetched search pages: ${pageNumber}/${totalPages}`);
+    }
   }
 
   const deduped = dedupeSeeds(seeds);
-  console.log(`Loaded IT seeds from pagination fallback: ${deduped.length}`);
+  console.log(`Loaded IT seeds from live search API: ${deduped.length}`);
   return deduped;
 }
 
@@ -323,8 +384,9 @@ async function buildPreparedRecords(
     }
 
     if (!fullDescription) {
-      console.log(`Skip empty description after selector retry: ${seed.url}`);
-      continue;
+      // Keep the job record even when detail text is blocked, to avoid coverage loss.
+      fullDescription = "Description unavailable from source at crawl time.";
+      console.log(`Description unavailable, keep record with placeholder: ${seed.url}`);
     }
 
     const techKeywords = extractTechKeywords(
@@ -379,6 +441,19 @@ async function ensureJobsTable(dbPool: Pool): Promise<void> {
 }
 
 async function syncMissingListingDate(dbPool: Pool): Promise<number> {
+  const [tableRows] = await dbPool.query<RowDataPacket[]>(
+    `
+      SELECT 1 AS ok
+      FROM information_schema.TABLES
+      WHERE TABLE_SCHEMA = DATABASE()
+        AND TABLE_NAME = 'job_it_report'
+      LIMIT 1
+    `,
+  );
+  if (tableRows.length === 0) {
+    return 0;
+  }
+
   const [result] = await dbPool.query(
     `
       UPDATE jobs AS j
@@ -467,10 +542,14 @@ async function runScraper(): Promise<void> {
     });
     const page = await context.newPage();
 
-    let seeds = await loadSeedsFromJobItReport(dbPool);
+    const reportSeeds = await loadSeedsFromJobItReport(dbPool);
+    const liveSeeds = await loadSeedsFromPagination(page);
+    const seeds = dedupeSeeds([...reportSeeds, ...liveSeeds]);
+    console.log(
+      `Merged seeds report=${reportSeeds.length}, live=${liveSeeds.length}, deduped=${seeds.length}`,
+    );
     if (seeds.length === 0) {
-      console.log("job_it_report is empty, switching to pagination fallback.");
-      seeds = await loadSeedsFromPagination(page);
+      throw new Error("No seeds loaded from both report table and live search API.");
     }
 
     const records = await buildPreparedRecords(context, seeds);
