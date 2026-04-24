@@ -21,8 +21,8 @@ It collects job data, normalizes and stores records in MySQL, serves analytics t
 ```mermaid
 flowchart TD
   A[Playwright Scraper] --> B[(MySQL: intern_nz_it_jobs)]
-  B --> C[/api/stats]
-  B --> D[/api/jobs?keyword=...]
+  B --> C["/api/stats"]
+  B --> D["/api/jobs (keyword drill-down)"]
   C --> E[Stats Dashboard]
   D --> E
   E --> F[Poster Export 1080x1440 PNG]
