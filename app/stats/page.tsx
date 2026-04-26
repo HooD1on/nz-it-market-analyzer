@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { toPng } from "html-to-image";
 import {
   Bar,
@@ -28,6 +28,7 @@ type StatsResponse = {
   dailyNewJobs: DailyDatum[];
   latestPublishedDate: string;
   latestPublishedCount: number;
+  latestCrawledAt: string | null;
   categoryDistribution: ChartDatum[];
 };
 
@@ -50,6 +51,7 @@ const BAR_COLOR = "#22d3ee";
 const LINE_COLOR = "#38bdf8";
 const CHART_WIDTH = 912;
 const CHART_HEIGHT = 500;
+const STATS_REFRESH_INTERVAL_MS = 120000;
 
 const UI_COPY = {
   zh: {
@@ -67,6 +69,7 @@ const UI_COPY = {
     clickBarHint: "点击柱子查看岗位明细",
     trendTitle: "岗位发布趋势（截至最近发布日期的近 7 天）",
     latestPublished: (date: string, count: number) => `最新发布：${date}（${count} 条）`,
+    latestCrawled: (value: string) => `最近抓取：${value}`,
     loadingDataShort: "数据加载中",
     bootstrapHint: "当前峰值可能受历史数据补录影响，后续会随每日新增发布逐步平滑。",
     drilldownTitle: "岗位明细钻取",
@@ -99,6 +102,7 @@ const UI_COPY = {
     clickBarHint: "Click a bar to drill into jobs",
     trendTitle: "Job Posting Trend (Last 7 days from latest published date)",
     latestPublished: (date: string, count: number) => `Latest: ${date} (${count})`,
+    latestCrawled: (value: string) => `Last Crawl: ${value}`,
     loadingDataShort: "Loading data",
     bootstrapHint:
       "The current peak may be influenced by historical backfill and should smooth out with daily updates.",
@@ -118,6 +122,20 @@ const UI_COPY = {
     langEn: "English",
   },
 } as const;
+
+function formatCrawledAt(value: string | null, locale: PosterLocale): string {
+  if (!value) {
+    return "";
+  }
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return value;
+  }
+  if (locale === "zh") {
+    return parsed.toLocaleString("zh-CN", { hour12: false });
+  }
+  return parsed.toLocaleString("en-NZ", { hour12: false });
+}
 
 async function isLikelySolidImage(dataUrl: string): Promise<boolean> {
   return new Promise<boolean>((resolve) => {
@@ -190,6 +208,7 @@ export default function StatsPage() {
   const [exportError, setExportError] = useState<string | null>(null);
   const [exportSuccess, setExportSuccess] = useState<string | null>(null);
   const [posterLocale, setPosterLocale] = useState<PosterLocale>("zh");
+  const hasLoadedStatsRef = useRef(false);
   const ui = UI_COPY[posterLocale];
 
   useEffect(() => {
@@ -197,7 +216,10 @@ export default function StatsPage() {
 
     async function loadStats() {
       try {
-        setLoading(true);
+        const shouldShowLoading = !hasLoadedStatsRef.current;
+        if (shouldShowLoading) {
+          setLoading(true);
+        }
         setError(null);
 
         const response = await fetch("/api/stats", { cache: "no-store" });
@@ -208,6 +230,7 @@ export default function StatsPage() {
         const data = (await response.json()) as StatsResponse;
         if (active) {
           setStats(data);
+          hasLoadedStatsRef.current = true;
         }
       } catch (err) {
         if (active) {
@@ -221,8 +244,27 @@ export default function StatsPage() {
     }
 
     void loadStats();
+    const intervalId = window.setInterval(() => {
+      void loadStats();
+    }, STATS_REFRESH_INTERVAL_MS);
+
+    const handleWindowFocus = () => {
+      void loadStats();
+    };
+    window.addEventListener("focus", handleWindowFocus);
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        void loadStats();
+      }
+    };
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
     return () => {
       active = false;
+      window.clearInterval(intervalId);
+      window.removeEventListener("focus", handleWindowFocus);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
   }, []);
 
@@ -252,6 +294,10 @@ export default function StatsPage() {
       day: "numeric",
     });
   }, [posterLocale]);
+  const latestCrawledLabel = useMemo(
+    () => (stats ? formatCrawledAt(stats.latestCrawledAt, posterLocale) : ""),
+    [stats, posterLocale],
+  );
   const isStatsReady = !loading && !error && Boolean(stats);
 
   useEffect(() => {
@@ -520,11 +566,18 @@ export default function StatsPage() {
                   <section className="h-[600px] w-full min-w-full rounded-xl border border-slate-700 bg-slate-800/60 p-6">
                     <div className="mb-3 flex items-center justify-between gap-3">
                       <h3 className="text-lg font-semibold text-cyan-300">{ui.trendTitle}</h3>
-                      <span className="rounded-md bg-slate-700 px-3 py-1 text-xs font-medium text-slate-200">
-                        {stats
-                          ? ui.latestPublished(stats.latestPublishedDate, stats.latestPublishedCount)
-                          : ui.loadingDataShort}
-                      </span>
+                      <div className="flex items-center gap-2">
+                        <span className="rounded-md bg-slate-700 px-3 py-1 text-xs font-medium text-slate-200">
+                          {stats
+                            ? ui.latestPublished(stats.latestPublishedDate, stats.latestPublishedCount)
+                            : ui.loadingDataShort}
+                        </span>
+                        {latestCrawledLabel ? (
+                          <span className="rounded-md bg-slate-700 px-3 py-1 text-xs font-medium text-slate-300">
+                            {ui.latestCrawled(latestCrawledLabel)}
+                          </span>
+                        ) : null}
+                      </div>
                     </div>
                     {isBootstrapLikeSpike ? (
                       <p className="mb-2 text-xs text-slate-300">{ui.bootstrapHint}</p>

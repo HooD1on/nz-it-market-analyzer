@@ -19,6 +19,10 @@ type KeywordRow = {
   tech_keywords: string | null;
 };
 
+type CrawlRow = {
+  latest_crawled_at: string | Date | null;
+};
+
 type TrendPoint = {
   date: string;
   value: number;
@@ -100,7 +104,7 @@ function buildKeywordFrequency(rows: KeywordRow[]): Array<{ name: string; value:
 
 export async function GET(): Promise<NextResponse> {
   try {
-    const [categoryRows, dailyRows, keywordRows] = await Promise.all([
+    const [categoryRows, dailyRows, keywordRows, crawlRows] = await Promise.all([
       queryStats<CategoryRow[]>(
         `
           SELECT category AS name, COUNT(*) AS value
@@ -128,15 +132,29 @@ export async function GET(): Promise<NextResponse> {
             AND CHAR_LENGTH(TRIM(tech_keywords)) > 0
         `,
       ),
+      queryStats<CrawlRow[]>(
+        `
+          SELECT MAX(created_at) AS latest_crawled_at
+          FROM jobs
+        `,
+      ),
     ]);
 
     const { trend, latestDate, latestCount } = buildRecentPostingTrend(dailyRows);
+    const latestCrawledAtRaw = crawlRows[0]?.latest_crawled_at ?? null;
+    const latestCrawledAt =
+      latestCrawledAtRaw instanceof Date
+        ? latestCrawledAtRaw.toISOString()
+        : latestCrawledAtRaw
+          ? new Date(latestCrawledAtRaw).toISOString()
+          : null;
 
     const payload = {
       techKeywordFrequency: buildKeywordFrequency(keywordRows),
       dailyNewJobs: trend,
       latestPublishedDate: latestDate,
       latestPublishedCount: latestCount,
+      latestCrawledAt,
       categoryDistribution: categoryRows.map((row) => ({
         name: row.name,
         value: Number(row.value) || 0,
