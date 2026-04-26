@@ -5,6 +5,7 @@ import { BrowserContext, chromium, Page } from "playwright";
 const REPORT_URL = "https://me2link.com/job?selection=job-report&ppage=1";
 const SEARCH_API_URL = "https://api.me2link.com/search";
 const RESET_JOBS = process.argv.includes("--reset-jobs");
+const DEEP_DESCRIPTION_REFETCH = process.argv.includes("--deep-description");
 
 loadEnv({ path: ".env.local" });
 
@@ -379,7 +380,7 @@ async function buildPreparedRecords(
       fullDescription = normalizeText(seed.shortDescription);
     }
 
-    if (!fullDescription) {
+    if (!fullDescription && DEEP_DESCRIPTION_REFETCH) {
       fullDescription = await refetchDescriptionBySelectors(context, seed.url);
     }
 
@@ -529,6 +530,11 @@ async function runScraper(): Promise<void> {
 
   try {
     await ensureJobsTable(dbPool);
+    console.log(
+      `Scraper mode: resetJobs=${RESET_JOBS ? "true" : "false"}, deepDescriptionRefetch=${
+        DEEP_DESCRIPTION_REFETCH ? "true" : "false"
+      }`,
+    );
     if (RESET_JOBS) {
       await dbPool.query("TRUNCATE TABLE jobs");
       console.log("jobs table truncated");
@@ -543,13 +549,27 @@ async function runScraper(): Promise<void> {
     const page = await context.newPage();
 
     const reportSeeds = await loadSeedsFromJobItReport(dbPool);
-    const liveSeeds = await loadSeedsFromPagination(page);
+    let liveSeeds: JobSeed[] = [];
+    let liveLoadError: unknown = null;
+
+    try {
+      liveSeeds = await loadSeedsFromPagination(page);
+    } catch (error) {
+      liveLoadError = error;
+      console.warn("live_failed_fallback_to_report", error);
+    }
+
     const seeds = dedupeSeeds([...reportSeeds, ...liveSeeds]);
     console.log(
       `Merged seeds report=${reportSeeds.length}, live=${liveSeeds.length}, deduped=${seeds.length}`,
     );
+
+    if (liveLoadError && reportSeeds.length > 0) {
+      console.log("Live API failed, continue with job_it_report seeds only.");
+    }
+
     if (seeds.length === 0) {
-      throw new Error("No seeds loaded from both report table and live search API.");
+      throw new Error("No seeds loaded from both report table and live search API fallback.");
     }
 
     const records = await buildPreparedRecords(context, seeds);

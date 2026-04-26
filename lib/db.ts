@@ -35,17 +35,46 @@ function createPoolConfig(): PoolOptions {
     connectionLimit: 10,
     queueLimit: 0,
     charset: "utf8mb4",
+    connectTimeout: 15000,
+    enableKeepAlive: true,
+    keepAliveInitialDelay: 0,
   };
 }
 
 export const dbPool: Pool = mysql.createPool(createPoolConfig());
 
+type DbErrorLike = {
+  code?: string;
+  errno?: number;
+  message?: string;
+};
+
+function isTransientDbError(error: unknown): boolean {
+  const dbError = error as DbErrorLike | undefined;
+  const code = dbError?.code ?? "";
+  return (
+    code === "ETIMEDOUT" ||
+    code === "ECONNRESET" ||
+    code === "PROTOCOL_CONNECTION_LOST" ||
+    code === "PROTOCOL_SEQUENCE_TIMEOUT"
+  );
+}
+
 export async function queryStats<T = RowDataPacket[]>(
   sql: string,
   params: Array<string | number | Date> = [],
 ): Promise<T> {
-  const [rows] = await dbPool.query(sql, params);
-  return rows as T;
+  try {
+    const [rows] = await dbPool.query(sql, params);
+    return rows as T;
+  } catch (error) {
+    if (!isTransientDbError(error)) {
+      throw error;
+    }
+    console.warn("Transient DB error detected, retrying query once:", error);
+    const [rows] = await dbPool.query(sql, params);
+    return rows as T;
+  }
 }
 
 export async function closeDbPool(): Promise<void> {

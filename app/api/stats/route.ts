@@ -100,35 +100,35 @@ function buildKeywordFrequency(rows: KeywordRow[]): Array<{ name: string; value:
 
 export async function GET(): Promise<NextResponse> {
   try {
-    const categoryRows = await queryStats<CategoryRow[]>(
-      `
-        SELECT category AS name, COUNT(*) AS value
-        FROM jobs
-        GROUP BY category
-        ORDER BY value DESC
-      `,
-    );
-
-    const dailyRows = await queryStats<DailyRow[]>(
-      `
-        SELECT DATE_FORMAT(listing_date, '%Y-%m-%d') AS listing_date_key, created_at
-        FROM jobs
-        WHERE COALESCE(listing_date, DATE(created_at)) >= (
-          SELECT DATE_SUB(MAX(COALESCE(listing_date, DATE(created_at))), INTERVAL 10 DAY)
+    const [categoryRows, dailyRows, keywordRows] = await Promise.all([
+      queryStats<CategoryRow[]>(
+        `
+          SELECT category AS name, COUNT(*) AS value
           FROM jobs
-        )
-        ORDER BY created_at ASC
-      `,
-    );
-
-    const keywordRows = await queryStats<KeywordRow[]>(
-      `
-        SELECT tech_keywords
-        FROM jobs
-        WHERE tech_keywords IS NOT NULL
-          AND CHAR_LENGTH(TRIM(tech_keywords)) > 0
-      `,
-    );
+          GROUP BY category
+          ORDER BY value DESC
+        `,
+      ),
+      queryStats<DailyRow[]>(
+        `
+          SELECT DATE_FORMAT(listing_date, '%Y-%m-%d') AS listing_date_key, created_at
+          FROM jobs
+          WHERE COALESCE(listing_date, DATE(created_at)) >= (
+            SELECT DATE_SUB(MAX(COALESCE(listing_date, DATE(created_at))), INTERVAL 10 DAY)
+            FROM jobs
+          )
+          ORDER BY created_at ASC
+        `,
+      ),
+      queryStats<KeywordRow[]>(
+        `
+          SELECT tech_keywords
+          FROM jobs
+          WHERE tech_keywords IS NOT NULL
+            AND CHAR_LENGTH(TRIM(tech_keywords)) > 0
+        `,
+      ),
+    ]);
 
     const { trend, latestDate, latestCount } = buildRecentPostingTrend(dailyRows);
 
