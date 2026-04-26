@@ -7,6 +7,7 @@ const SEARCH_API_URL = "https://api.me2link.com/search";
 const REPORT_TIMEZONE = "Pacific/Auckland";
 const RESET_JOBS = process.argv.includes("--reset-jobs");
 const DEEP_DESCRIPTION_REFETCH = process.argv.includes("--deep-description");
+const ALLOW_LIVE_FALLBACK = process.argv.includes("--allow-live-fallback");
 
 loadEnv({ path: ".env.local" });
 
@@ -313,16 +314,50 @@ async function loadSeedsFromPagination(page: Page): Promise<JobSeed[]> {
 
   appendITSeeds(firstPageListings);
 
+  const failedPages: number[] = [];
   for (let pageNumber = 2; pageNumber <= totalPages; pageNumber += 1) {
-    const response = await fetchSearchPageWithRetry(page, pageNumber);
-    const listings = response.listings ?? [];
-    if (listings.length === 0) {
-      console.log(`Page ${pageNumber} returned empty listings, continue scanning.`);
-      continue;
+    try {
+      const response = await fetchSearchPageWithRetry(page, pageNumber);
+      const listings = response.listings ?? [];
+      if (listings.length === 0) {
+        console.log(`Page ${pageNumber} returned empty listings, continue scanning.`);
+      } else {
+        appendITSeeds(listings);
+      }
+    } catch (error) {
+      failedPages.push(pageNumber);
+      console.warn(`Page ${pageNumber} fetch failed after retries`, error);
     }
-    appendITSeeds(listings);
+
     if (pageNumber % 50 === 0 || pageNumber === totalPages) {
       console.log(`Fetched search pages: ${pageNumber}/${totalPages}`);
+    }
+  }
+
+  if (failedPages.length > 0) {
+    console.warn(`Retry pass for failed pages: ${failedPages.length}`);
+    const retryStillFailed: number[] = [];
+    for (const pageNumber of failedPages) {
+      try {
+        const response = await fetchSearchPageWithRetry(page, pageNumber);
+        const listings = response.listings ?? [];
+        if (listings.length === 0) {
+          console.log(`Retry page ${pageNumber} returned empty listings.`);
+          continue;
+        }
+        appendITSeeds(listings);
+      } catch (error) {
+        retryStillFailed.push(pageNumber);
+        console.warn(`Retry page ${pageNumber} still failed`, error);
+      }
+    }
+
+    if (retryStillFailed.length > 0) {
+      throw new Error(
+        `Search API pagination incomplete, failed pages: ${retryStillFailed
+          .slice(0, 20)
+          .join(", ")}${retryStillFailed.length > 20 ? "..." : ""}`,
+      );
     }
   }
 
@@ -547,7 +582,7 @@ async function runScraper(): Promise<void> {
     console.log(
       `Scraper mode: resetJobs=${RESET_JOBS ? "true" : "false"}, deepDescriptionRefetch=${
         DEEP_DESCRIPTION_REFETCH ? "true" : "false"
-      }`,
+      }, allowLiveFallback=${ALLOW_LIVE_FALLBACK ? "true" : "false"}`,
     );
     if (RESET_JOBS) {
       await dbPool.query("TRUNCATE TABLE jobs");
@@ -578,8 +613,15 @@ async function runScraper(): Promise<void> {
       `Merged seeds report=${reportSeeds.length}, live=${liveSeeds.length}, deduped=${seeds.length}`,
     );
 
-    if (liveLoadError && reportSeeds.length > 0) {
-      console.log("Live API failed, continue with job_it_report seeds only.");
+    if (liveLoadError) {
+      if (!ALLOW_LIVE_FALLBACK) {
+        throw new Error(
+          "Live search API failed and strict mode is enabled. Re-run with --allow-live-fallback to permit report-only ingestion.",
+        );
+      }
+      if (reportSeeds.length > 0) {
+        console.log("Live API failed, continue with job_it_report seeds only (--allow-live-fallback).");
+      }
     }
 
     if (seeds.length === 0) {
