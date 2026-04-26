@@ -4,6 +4,7 @@ import { BrowserContext, chromium, Page } from "playwright";
 
 const REPORT_URL = "https://me2link.com/job?selection=job-report&ppage=1";
 const SEARCH_API_URL = "https://api.me2link.com/search";
+const REPORT_TIMEZONE = "Pacific/Auckland";
 const RESET_JOBS = process.argv.includes("--reset-jobs");
 const DEEP_DESCRIPTION_REFETCH = process.argv.includes("--deep-description");
 
@@ -43,7 +44,7 @@ type PreparedJobRecord = {
   sourceUrl: string;
   techKeywords: string[];
   createdAt: Date;
-  listingDate: Date | null;
+  listingDate: string | null;
 };
 
 const KEYWORD_PATTERNS: Array<{ keyword: string; patterns: RegExp[] }> = [
@@ -86,7 +87,7 @@ function htmlToText(html: string): string {
   return normalizeText(text);
 }
 
-function parseListingDate(raw: string): Date | null {
+function parseListingDate(raw: string): string | null {
   const value = normalizeText(raw);
   if (!value) {
     return null;
@@ -97,8 +98,21 @@ function parseListingDate(raw: string): Date | null {
     return null;
   }
 
-  // Keep date-only semantic for market publishing date.
-  return new Date(Date.UTC(parsed.getUTCFullYear(), parsed.getUTCMonth(), parsed.getUTCDate()));
+  // Keep date-only semantic using NZ local date to avoid UTC date-shift.
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: REPORT_TIMEZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(parsed);
+  const year = parts.find((part) => part.type === "year")?.value ?? "";
+  const month = parts.find((part) => part.type === "month")?.value ?? "";
+  const day = parts.find((part) => part.type === "day")?.value ?? "";
+  if (!year || !month || !day) {
+    return null;
+  }
+
+  return `${year}-${month}-${day}`;
 }
 
 function isITCategory(category: string, classification = "", itCategory = ""): boolean {
